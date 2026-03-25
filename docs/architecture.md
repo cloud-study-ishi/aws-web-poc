@@ -23,3 +23,10 @@ Application Load Balancer (manual-poc-alb)
 Target Group (manual-poc-tg)
   ├─ manual-poc-web1
   └─ manual-poc-web2
+
+
+Operator
+  ↓
+SSM Session Manager
+  ↓
+EC2 instances
