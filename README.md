@@ -138,3 +138,38 @@ EC2
 - `docs/design_decisions.md`
 - `docs/architecture.md`
 - `docs/verification.md`
+
+  ## Terraform版
+
+手作業で構築した最小 Web 基盤を、Terraform を用いて別 VPC 上に再現した。  
+本リポジトリでは、手作業版で構成理解を行ったうえで、Terraform 版で IaC による再現性と構築速度を確認している。
+
+### Terraform版のポイント
+- VPC / Public Subnet / Internet Gateway / Route Table を Terraform で構築
+- ALB 配下に EC2 2 台を配置
+- EC2 への管理アクセスは SSH ではなく Systems Manager (SSM) を利用
+- EC2 の HTTP 受信は ALB Security Group からのみ許可
+- user data により nginx および `index.html` を自動設定
+
+### Terraform ディレクトリ
+- [Terraform コード](terraform/)
+
+### Terraform版ドキュメント
+- [構成概要](docs/terraform_architecture.md)
+- [検証結果](docs/terraform_verification.md)
+
+### 実行手順
+
+```powershell
+cd terraform
+terraform init
+terraform fmt -recursive
+terraform validate
+terraform plan
+terraform apply
+```
+
+### 検証結果概要
+- Terraform により最小 Web 基盤を別 VPC 上へ再現できた
+- ALB の DNS 名へアクセスし、`tf-poc-web1` / `tf-poc-web2` が切り替わって表示されることを確認した
+- `terraform apply` の所要時間は約 3 分であり、手作業構築と比較して IaC の再現性と構築速度を確認できた
