@@ -121,18 +121,6 @@ EC2
 
 ---
 
-## 今後の予定
-今後は、手作業版で理解した構成を Terraform で別 VPC に再現し、以下を進める予定です。
-
-- Terraform による再構築
-- CloudWatch Alarm 等の監視追加
-- セキュリティ設定の見直し
-- destroy / 再 apply による再現性確認
-- README / 構成図 / 設計理由の整理
-- 転職用ポートフォリオとしての説明資料化
-
----
-
 ## 関連ドキュメント
 - `docs/manual_build_notes.md`
 - `docs/design_decisions.md`
