@@ -1,150 +1,91 @@
 # AWS Web PoC
 
 ## 概要
-このリポジトリは、AWS上に最小構成のWeb基盤を構築し、構成要素の理解と IaC 化の練習を目的として作成した PoC です。
 
-まずは AWS コンソールから手作業で環境を構築し、各サービスの役割や通信経路を理解したうえで、後続で Terraform を用いて同等構成を別 VPC に再現する方針です。
+AWS 上に最小構成の Web 基盤を構築し、ネットワーク、アクセス制御、ロードバランシング、および IaC の基本を確認した個人学習 PoC です。
 
-本 PoC では、以下のような観点を確認しています。
+最初に AWS マネジメントコンソールから手作業で環境を構築し、各リソースの役割と通信経路を確認しました。その後、同等の構成を別 VPC 上に Terraform で再構築し、コードによる再現性、初期設定の自動化、構築・削除までの一連の操作を検証しました。
 
-- VPC / Subnet / Internet Gateway / Route Table の役割
-- Security Group による通信制御
-- EC2 を直接公開せず、ALB 経由でのみアクセスさせる構成
-- SSH を使わず、SSM Session Manager による管理アクセス
-- ALB / Target Group / Listener / Health Check の関係
-- 手動構築した内容を Terraform で再現可能な形に整理する流れ
+検証完了後、作成した AWS リソースは削除済みです。
 
----
+## 実施内容
 
-## 構成概要
-手作業版の PoC では、以下の構成を作成しました。
+- VPC / Public Subnet / Internet Gateway / Route Table の構築
+- 2 つの Availability Zone への EC2 配置
+- Application Load Balancer による HTTP リクエストの分散
+- Security Group による通信経路の制御
+- SSH ポートを開放せず、AWS Systems Manager Session Manager を利用した管理アクセス
+- user data による nginx とコンテンツの自動設定
+- 手作業で構築した構成の Terraform による再現
+- `terraform validate` / `plan` / `apply` / `state list` / `destroy` の確認
+
+## 構成イメージ
+
+```mermaid
+flowchart TD
+    User[利用者] -->|HTTP 80| ALB[Application Load Balancer]
+    ALB --> TG[Target Group]
+    TG --> EC2A[EC2: web1<br/>Public Subnet / AZ-a]
+    TG --> EC2C[EC2: web2<br/>Public Subnet / AZ-c]
+
+    Operator[管理者] --> SSM[AWS Systems Manager<br/>Session Manager]
+    SSM --> EC2A
+    SSM --> EC2C
+```
+
+## 設計上のポイント
+
+- ALB をインターネット公開の入口とした
+- EC2 は学習範囲を絞るため Public Subnet に配置し、Public IP を付与した
+- EC2 の HTTP 受信元は ALB 用 Security Group に限定し、インターネットから EC2 への直接 HTTP アクセスを許可しない構成とした
+- SSH（22 番ポート）は開放せず、管理アクセスには Session Manager を利用した
+- 手作業版と Terraform 版は VPC およびタグを分け、構築方式を識別できるようにした
+- Terraform 版では EC2 2 台の初期設定を user data で自動化した
+
+> 本 PoC は各サービスの関係を理解するための最小構成です。実運用を想定した構成では、Private Subnet、HTTPS、監視、Terraform State のリモート管理などを追加する余地があります。
+
+## 手作業版
+
+手作業版では、次の構成を AWS マネジメントコンソールから作成しました。
 
 - VPC × 1
 - Public Subnet × 2（2AZ）
 - Internet Gateway × 1
 - Public Route Table × 1
-- Security Group × 2
-  - ALB 用
-  - EC2 用
-- IAM Role（SSM 接続用）× 1
+- Security Group × 2（ALB 用 / EC2 用）
+- IAM Role / Instance Profile（SSM 接続用）
 - EC2 × 2
 - Target Group × 1
 - Application Load Balancer × 1
 
-アクセス経路は以下の通りです。
+EC2 1 台目は Session Manager から接続して nginx を手動導入し、2 台目は user data で自動構築しました。Target Group のヘルスチェックと、ALB の DNS 名経由で 2 台の Web サーバーへ到達できることを確認しました。
+
+## Terraform 版
+
+手作業版と同等の最小 Web 基盤を、別 VPC 上に Terraform で構築しました。
+
+### Terraform コード
+
+- [Terraform ディレクトリ](terraform/)
+
+### 主なファイル
 
 ```text
-Internet
-  ↓
-Application Load Balancer
-  ↓
-Target Group
-  ├─ manual-poc-web1
-  └─ manual-poc-web2
+terraform/
+├─ versions.tf
+├─ provider.tf
+├─ variables.tf
+├─ locals.tf
+├─ vpc.tf
+├─ security_groups.tf
+├─ iam.tf
+├─ ec2.tf
+├─ alb.tf
+├─ outputs.tf
+├─ terraform.tfvars
+└─ user_data/
+   └─ nginx.sh.tftpl
 ```
-
-管理経路は以下の通りです。
-
-```text
-利用者端末
-  ↓
-SSM Session Manager
-  ↓
-EC2
-```
-
----
-
-## 手作業版の構成情報
-
-### リージョン
-- `ap-northeast-1`
-
-### VPC
-- `manual-poc-vpc`
-- CIDR: `10.0.0.0/16`
-
-### Subnet
-- `manual-poc-public-subnet-a`
-  - AZ: `ap-northeast-1a`
-  - CIDR: `10.0.1.0/24`
-- `manual-poc-public-subnet-c`
-  - AZ: `ap-northeast-1c`
-  - CIDR: `10.0.2.0/24`
-
-### 主なリソース
-- Internet Gateway: `manual-poc-igw`
-- Route Table: `manual-poc-public-rt`
-- ALB SG: `manual-poc-alb-sg`
-- EC2 SG: `manual-poc-ec2-sg`
-- IAM Role: `manual-poc-ec2-role`
-- EC2
-  - `manual-poc-web1`
-  - `manual-poc-web2`
-- Target Group: `manual-poc-tg`
-- ALB: `manual-poc-alb`
-
----
-
-## 設計方針
-今回の PoC では、理解優先のため、あえて最小構成から着手しています。
-
-- ALB はインターネット公開する
-- EC2 は Public Subnet 上に配置する
-- ただし、EC2 の Security Group で ALB からの HTTP のみ許可し、外部からの直接アクセスはさせない
-- EC2 の管理アクセスは SSH ではなく SSM を利用する
-- 手作業版と Terraform 版は VPC とタグを分けて管理する
-
----
-
-## 動作確認内容
-手作業版では、以下を確認済みです。
-
-- VPC / Public Subnet / IGW / Route Table によりインターネット到達可能なネットワークを構成
-- ALB 用 Security Group で HTTP(80) を外部公開
-- EC2 用 Security Group で、ALB からの HTTP(80) のみ許可
-- IAM Role を付与した EC2 に対し、SSM Session Manager で接続可能であることを確認
-- `manual-poc-web1` は SSM 経由で nginx を手動導入
-- `manual-poc-web2` は user data により nginx を自動導入
-- Target Group に 2台の EC2 を登録
-- ALB に Listener を設定し、Target Group に転送
-- ALB の DNS 名経由でアクセスし、`manual-poc-web1` / `manual-poc-web2` の応答を確認
-
----
-
-## この PoC で学んだこと
-- Subnet が Public になる条件は、IGW のアタッチと Route Table のデフォルトルート設定が必要であること
-- Security Group により、Public Subnet 上の EC2 でも ALB 経由のみのアクセス制御が可能であること
-- Session Manager を使うことで、SSH ポートを開けずに EC2 を管理できること
-- ALB / Target Group / Listener / Health Check はそれぞれ別の役割を持つこと
-- 手動構築で理解した内容を、その後 Terraform に落とし込む流れが有効であること
-
----
-
-## 関連ドキュメント
-- `docs/manual_build_notes.md`
-- `docs/design_decisions.md`
-- `docs/architecture.md`
-- `docs/verification.md`
-
-  ## Terraform版
-
-手作業で構築した最小 Web 基盤を、Terraform を用いて別 VPC 上に再現した。  
-本リポジトリでは、手作業版で構成理解を行ったうえで、Terraform 版で IaC による再現性と構築速度を確認している。
-
-### Terraform版のポイント
-- VPC / Public Subnet / Internet Gateway / Route Table を Terraform で構築
-- ALB 配下に EC2 2 台を配置
-- EC2 への管理アクセスは SSH ではなく Systems Manager (SSM) を利用
-- EC2 の HTTP 受信は ALB Security Group からのみ許可
-- user data により nginx および `index.html` を自動設定
-
-### Terraform ディレクトリ
-- [Terraform コード](terraform/)
-
-### Terraform版ドキュメント
-- [構成概要](docs/terraform_architecture.md)
-- [検証結果](docs/terraform_verification.md)
 
 ### 実行手順
 
@@ -155,9 +96,47 @@ terraform fmt -recursive
 terraform validate
 terraform plan
 terraform apply
+terraform output
+terraform state list
+terraform destroy
 ```
 
-### 検証結果概要
-- Terraform により最小 Web 基盤を別 VPC 上へ再現できた
-- ALB の DNS 名へアクセスし、`tf-poc-web1` / `tf-poc-web2` が切り替わって表示されることを確認した
-- `terraform apply` の所要時間は約 3 分であり、手作業構築と比較して IaC の再現性と構築速度を確認できた
+> `terraform apply` および AWS リソースの利用には料金が発生する可能性があります。
+
+## 検証結果
+
+- `terraform validate` が成功することを確認
+- Terraform により 20 リソースが作成されることを確認
+- Target Group 配下の EC2 2 台が `healthy` になることを確認
+- ALB の DNS 名へ繰り返しアクセスし、`tf-poc-web1` / `tf-poc-web2` の両方が表示されることを確認
+- 主要リソースが Terraform State で管理されていることを確認
+- 検証後に `terraform destroy` を実行し、20 リソースが削除されることを確認
+
+| `tf-poc-web1` | `tf-poc-web2` |
+|---|---|
+| ![ALB access result web1](docs/images/alb1.png) | ![ALB access result web2](docs/images/alb2.png) |
+
+詳細な証跡は [Terraform 版の検証結果](docs/terraform_verification.md) にまとめています。
+
+## 関連ドキュメント
+
+### 手作業版
+
+- [手作業構築メモ](docs/manual_build_notes.md)
+- [構成概要](docs/architecture.md)
+- [動作確認結果](docs/verification.md)
+
+### 設計・Terraform 版
+
+- [設計判断メモ](docs/design_decisions.md)
+- [Terraform 版構成概要](docs/terraform_architecture.md)
+- [Terraform 版検証結果](docs/terraform_verification.md)
+
+## 今後の改善候補
+
+- EC2 を Private Subnet に配置し、ALB のみを Public Subnet に配置する
+- ACM 証明書を利用して HTTPS 化する
+- CloudWatch Metrics / Alarm による監視を追加する
+- Terraform State を S3 などでリモート管理する
+- CI で `terraform fmt -check` / `terraform validate` を自動実行する
+- IAM、暗号化、ログ、送信方向の通信制御を含め、セキュリティ設定を強化する
