@@ -1,27 +1,25 @@
-# 構成概要
+# 手作業版 構成概要
 
-このドキュメントでは、手作業版 PoC の構成を整理します。
-
----
+このドキュメントでは、手作業で構築した AWS Web PoC の構成を整理します。
 
 ## 1. 全体像
-本 PoC は、AWS 上に最小限の Web 基盤を構築し、ALB 配下に 2台の EC2 を配置する構成です。
 
-外部公開の入口は Application Load Balancer とし、EC2 インスタンスは ALB 経由の HTTP 通信のみを許可しています。  
-また、EC2 の管理アクセスは SSH ではなく、SSM Session Manager を使用しています。
+Application Load Balancer（ALB）配下に、2 つの Availability Zone に分けて EC2 を 2 台配置しました。
 
----
+ALB をインターネット公開の入口とし、EC2 の HTTP 受信元は ALB 用 Security Group に限定しています。EC2 は Public Subnet 上に配置しましたが、インターネットから EC2 への直接 HTTP アクセスは許可していません。
+
+EC2 の管理アクセスには SSH ではなく、AWS Systems Manager Session Manager を利用しました。
 
 ## 2. 構成イメージ
 
 ```text
 Internet
-  ↓
+  ↓ HTTP 80
 Application Load Balancer (manual-poc-alb)
   ↓
 Target Group (manual-poc-tg)
-  ├─ manual-poc-web1
-  └─ manual-poc-web2
+  ├─ manual-poc-web1 (ap-northeast-1a)
+  └─ manual-poc-web2 (ap-northeast-1c)
 ```
 
 管理経路は以下の通りです。
@@ -29,138 +27,139 @@ Target Group (manual-poc-tg)
 ```text
 Operator
   ↓
-SSM Session Manager
+AWS Systems Manager Session Manager
   ↓
 EC2 instances
 ```
 
----
-
-## 3. 手作業版の構成情報
+## 3. ネットワーク構成
 
 ### リージョン
+
 - `ap-northeast-1`
 
 ### VPC
-- `manual-poc-vpc`
+
+- Name: `manual-poc-vpc`
 - CIDR: `10.0.0.0/16`
 
-### Subnet
+### Public Subnet
+
 - `manual-poc-public-subnet-a`
   - AZ: `ap-northeast-1a`
   - CIDR: `10.0.1.0/24`
-
 - `manual-poc-public-subnet-c`
   - AZ: `ap-northeast-1c`
   - CIDR: `10.0.2.0/24`
 
 ### Internet Gateway
+
 - `manual-poc-igw`
 
 ### Route Table
+
 - `manual-poc-public-rt`
 
-この Route Table には以下のルートを設定しています。
+主なルート:
 
 - `10.0.0.0/16 -> local`
 - `0.0.0.0/0 -> manual-poc-igw`
 
-これにより、2つの Subnet を Public Subnet として成立させています。
-
----
+2 つの Subnet をこの Route Table に関連付け、Internet Gateway への経路を持つ Public Subnet としました。
 
 ## 4. セキュリティ設計
 
 ### ALB 用 Security Group
-- 名前: `manual-poc-alb-sg`
-- 用途: 外部から ALB への HTTP アクセスを受ける
 
-主なルール:
-- Inbound
+- Name: `manual-poc-alb-sg`
+- Inbound:
   - HTTP 80 / source `0.0.0.0/0`
-- Outbound
+- Outbound:
   - すべて許可
 
 ### EC2 用 Security Group
-- 名前: `manual-poc-ec2-sg`
-- 用途: EC2 への通信を ALB 経由に限定する
 
-主なルール:
-- Inbound
+- Name: `manual-poc-ec2-sg`
+- Inbound:
   - HTTP 80 / source `manual-poc-alb-sg`
-- Outbound
+- Outbound:
   - すべて許可
 
-これにより、EC2 は Public Subnet 上に存在していても、外部から直接 HTTP アクセスされない構成としています。
-
----
+EC2 用 Security Group の受信元には CIDR ではなく ALB 用 Security Group を指定し、ALB を経由した HTTP 通信のみを許可しました。SSH（22 番ポート）は開放していません。
 
 ## 5. EC2 構成
 
 ### `manual-poc-web1`
+
 - 配置先: `manual-poc-public-subnet-a`
-- 構築方法: SSM で接続し、nginx を手動導入
-- index.html の内容: `manual-poc-web1`
+- 構築方法: Session Manager で接続し、nginx を手動導入
+- `index.html`: `manual-poc-web1`
 
 ### `manual-poc-web2`
+
 - 配置先: `manual-poc-public-subnet-c`
 - 構築方法: user data により nginx を自動導入
-- index.html の内容: `manual-poc-web2`
-
----
+- `index.html`: `manual-poc-web2`
 
 ## 6. 管理アクセス
-EC2 への管理アクセスは、IAM Role と SSM Session Manager を使っています。
 
 ### IAM Role
+
 - `manual-poc-ec2-role`
 
 ### 付与ポリシー
+
 - `AmazonSSMManagedInstanceCore`
 
 ### 方針
-- SSH は使用しない
-- 22番ポートは開放しない
-- AWS Systems Manager 経由で接続する
 
----
+- SSH は使用しない
+- 22 番ポートは開放しない
+- Session Manager を管理経路として利用する
 
 ## 7. ALB 構成
 
 ### Load Balancer
-- `manual-poc-alb`
-- 種別: Application Load Balancer
-- スキーム: internet-facing
-- リスナー: HTTP 80
+
+- Name: `manual-poc-alb`
+- Type: Application Load Balancer
+- Scheme: `internet-facing`
+- Listener: HTTP 80
 
 ### Target Group
-- `manual-poc-tg`
-- ターゲットタイプ: Instance
-- プロトコル: HTTP
-- ポート: 80
-- ヘルスチェックパス: `/`
 
-### ターゲット
+- Name: `manual-poc-tg`
+- Target type: Instance
+- Protocol: HTTP
+- Port: 80
+- Health check path: `/`
+
+### Targets
+
 - `manual-poc-web1`
 - `manual-poc-web2`
 
----
-
 ## 8. 動作確認
-以下の点を確認済みです。
 
-- web1 は SSM 接続後、nginx を手動導入して `manual-poc-web1` を返す
-- web2 は user data 実行により `manual-poc-web2` を返す
-- ALB 経由でアクセスし、web1 / web2 の応答を確認
-- Target Group のヘルスチェックで 2台が正常に判定されることを確認
+以下を確認しました。
 
----
+- `manual-poc-web1` に Session Manager で接続し、nginx を手動導入できること
+- `manual-poc-web2` で user data による nginx の自動導入が成功すること
+- Target Group のヘルスチェックで EC2 2 台が正常になること
+- ALB の DNS 名経由で EC2 2 台の応答を確認できること
 
-## 9. 今後の拡張予定
-この手作業版 PoC をベースに、次の段階として以下を予定しています。
+## 9. 後続フェーズ
 
-- Terraform による別 VPC での再現
-- CloudWatch Alarm の追加
-- セキュリティ設定の見直し
-- 再構築手順の整理
-- README や構成図の改善
+この手作業版を基に、同等構成を別 VPC 上に Terraform で再現しました。
+
+- [Terraform 版構成概要](terraform_architecture.md)
+- [Terraform 版検証結果](terraform_verification.md)
+
+検証用に作成した AWS リソースは削除済みです。
+
+## 10. 今後の改善候補
+
+- EC2 を Private Subnet に配置する
+- ALB を HTTPS 化し、ACM 証明書を利用する
+- CloudWatch Metrics / Alarm による監視を追加する
+- 送信方向を含めて Security Group の許可範囲を見直す

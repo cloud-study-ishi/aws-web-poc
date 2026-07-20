@@ -1,147 +1,138 @@
 # 設計判断メモ
 
-このドキュメントでは、本 PoC における主要な設計判断と、その理由を整理しています。
+このドキュメントでは、本 PoC における主要な設計判断と、その理由を整理します。
 
----
+## 1. 手作業で構築した後に Terraform で再現した理由
 
-## 1. 最初は手作業で構築し、その後 Terraform で再現する方針にした理由
-今回の PoC では、最初から IaC で構築するのではなく、まず AWS コンソールから手作業で環境を構築しました。
-
-理由は以下の通りです。
-
-- 各 AWS リソースの役割を、画面操作と関連付けながら理解したかった
-- VPC / Subnet / Route Table / Security Group / ALB / Target Group の関係を整理したかった
-- 後から Terraform を書く際に、「何をコード化しているのか」を理解した状態にしたかった
-
-単に Terraform を書くだけではなく、手作業で構成を確認したうえで IaC 化することで、再現性だけでなく理解の深さも示せると考えています。
-
----
-
-## 2. 手作業版と Terraform 版で VPC を分ける理由
-手作業版と Terraform 版は、同じ VPC に混在させず、別 VPC で構築する方針としました。
+最初から IaC のみで構築するのではなく、まず AWS マネジメントコンソールから手作業で環境を構築しました。
 
 理由は以下の通りです。
 
-- 手作業版の検証結果と Terraform 版の結果を分けて管理しやすくするため
-- どのリソースがどの方式で作られたかを明確にするため
-- destroy / apply などの Terraform 操作時に、手作業版へ影響しないようにするため
-- ポートフォリオとして「手動理解フェーズ」と「IaC 再現フェーズ」を説明しやすくするため
+- 各 AWS リソースの役割を、画面操作と関連付けて理解するため
+- VPC / Subnet / Route Table / Security Group / ALB / Target Group の関係を整理するため
+- Terraform のコードが、AWS 上のどの設定に対応するかを理解するため
+- 手作業と IaC の双方を経験し、IaC による再現性と作業差分を比較するため
 
-また、タグも以下のように分離しています。
+手作業で構成を確認した後、同等構成を Terraform で再現し、`validate` / `plan` / `apply` / `state list` / `destroy` までを実施しました。
+
+## 2. 手作業版と Terraform 版で VPC を分けた理由
+
+手作業版と Terraform 版は同じ VPC に混在させず、別 VPC に構築しました。
+
+- 手作業版と Terraform 版の検証結果を分けて管理するため
+- どのリソースがどの方式で作成されたかを明確にするため
+- `terraform apply` / `terraform destroy` が手作業版へ影響しないようにするため
+- 「手動理解フェーズ」と「IaC 再現フェーズ」を分けて説明できるようにするため
+
+タグも以下のように分離しました。
 
 - 手作業版: `Project=aws-poc`, `BuildType=manual`
 - Terraform 版: `Project=aws-poc`, `BuildType=terraform`
 
----
+## 3. Private Subnet / NAT Gateway を最初のスコープに含めなかった理由
 
-## 3. 最初の PoC で Private Subnet / NAT Gateway を入れなかった理由
-今回の PoC では、あえて最小構成から開始するため、Private Subnet や NAT Gateway は導入していません。
+本 PoC では、基本的な通信経路を理解することを優先し、Private Subnet と NAT Gateway は導入していません。
 
-理由は以下の通りです。
+- ALB から EC2 までの最小 Web 基盤を先に理解するため
+- VPC / Public Subnet / Internet Gateway / Route Table / Security Group の関係に学習範囲を絞るため
+- 構成要素を増やしすぎず、通信が成立する条件を確認しやすくするため
+- NAT Gateway の継続料金を避け、短時間の個人学習 PoC としてコストを抑えるため
 
-- まずは ALB → EC2 の基本的な Web 基盤構成を理解することを優先したかった
-- VPC / Public Subnet / IGW / Route Table / Security Group / ALB の最小構成を把握したかった
-- 要素を増やしすぎると、何が通信成立の本質か見えにくくなるため
-- 学習順序として、まず基本構成、その後にセキュアな拡張構成へ進む方が理解しやすいと判断したため
+実運用を想定する場合は、ALB のみを Public Subnet に配置し、EC2 を Private Subnet に配置する構成を検討します。EC2 の外向き通信には、要件に応じて NAT Gateway や VPC Endpoint などを選択します。
 
-将来的には、Private Subnet 配置や NAT Gateway 利用、VPC Endpoint の利用なども拡張候補として想定しています。
+## 4. EC2 を Public Subnet に配置した理由とアクセス制御
 
----
+学習範囲とコストを抑えるため、EC2 は Public Subnet に配置し、Public IP を付与しました。ただし、EC2 を直接の公開入口とする意図はありません。
 
-## 4. EC2 を Public Subnet に置きつつ、直接公開しない理由
-今回の PoC では、EC2 インスタンスを Public Subnet 上に配置しています。  
-ただし、設計意図としては「EC2 を外部に直接公開する」ことではありません。
+EC2 用 Security Group では、以下のように受信を制御しました。
 
-EC2 用 Security Group では、以下のように制御しています。
-
-- HTTP(80) の送信元を `manual-poc-alb-sg` に限定
-- 外部からの直接 HTTP アクセスは不可
-- SSH(22) は開放しない
-
-これにより、通信経路は以下に限定されます。
+- HTTP（80）の送信元を ALB 用 Security Group に限定
+- インターネットから EC2 への直接 HTTP アクセスを許可しない
+- SSH（22）を許可しない
 
 ```text
-Internet -> ALB -> EC2
+Internet -> ALB -> Target Group -> EC2
 ```
 
-つまり、Public Subnet を使っていても、Security Group により ALB 経由のみのアクセスに絞る構成としています。
+この構成により、外部公開の入口を ALB に集約し、EC2 の HTTP 受信経路を ALB に限定しました。
 
----
+## 5. SSH ではなく Session Manager を利用した理由
 
-## 5. SSH ではなく SSM Session Manager を使う理由
-本 PoC では、EC2 の管理アクセスに SSH を使わず、AWS Systems Manager Session Manager を採用しています。
+EC2 の管理アクセスには SSH を使わず、AWS Systems Manager Session Manager を採用しました。
 
-理由は以下の通りです。
+- 22 番ポートを開放せずに管理できるため
+- SSH 鍵の配布、保管、更新を不要にできるため
+- 不要なインバウンドルールを追加しない方針に合うため
+- AWS のマネージドな管理経路を利用する経験を得るため
 
-- 22番ポートを開けずに管理できるため
-- SSH 鍵の配布・保管・管理が不要になるため
-- 「不要なインバウンドを開けない」という方針に合っているため
-- AWS のマネージドな管理経路を利用する実践経験として有効なため
+EC2 には IAM Role を付与し、AWS 管理ポリシー `AmazonSSMManagedInstanceCore` を利用しました。
 
-この構成では、EC2 に IAM Role `manual-poc-ec2-role` を付与し、`AmazonSSMManagedInstanceCore` を利用しています。
+## 6. 手作業版で EC2 の構築方法を分けた理由
 
----
-
-## 6. web1 は手動構築、web2 は user data 自動構築に分けた理由
-PoC の中で、EC2 の初期構築方法を 2 パターン試しています。
+手作業版では、EC2 の初期構築を 2 パターンで実施しました。
 
 - `manual-poc-web1`
-  - SSM で接続し、nginx を手動導入
+  - Session Manager で接続し、nginx を手動導入
 - `manual-poc-web2`
-  - user data を用いて起動時に nginx を自動導入
+  - user data を利用し、起動時に nginx を自動導入
 
-このように分けた理由は以下の通りです。
+目的は以下の通りです。
 
-- 手動作業で「EC2 の中で何をしているか」を理解したかった
-- user data による自動化の初歩も同時に確認したかった
-- 後で Terraform に進む際に、「手動でやったことをどう自動化するか」を説明しやすくするため
+- EC2 内部で必要となる設定を手動操作で理解するため
+- user data による初期設定自動化を確認するため
+- 手動手順を Terraform 版でどのように自動化するか比較するため
 
----
+Terraform 版では、EC2 2 台とも user data による同一方式の初期設定に統一しました。
 
-## 7. ALB をインターネット向けにし、Target Group 経由で転送する理由
-今回の PoC では、外部公開の入口として Application Load Balancer を採用しています。
+## 7. Application Load Balancer を採用した理由
 
-理由は以下の通りです。
+外部公開の入口として Application Load Balancer を採用しました。
 
-- 複数の EC2 に対してリクエストを分散できるため
-- ヘルスチェックにより、疎通性を監視できるため
-- EC2 を直接公開せず、ALB を入口とする一般的な Web 構成を確認できるため
-- 今後 HTTPS 化やルール追加などの拡張にもつなげやすいため
+- EC2 2 台へ HTTP リクエストを分散するため
+- Target Group のヘルスチェックでバックエンドの応答状態を確認するため
+- EC2 の HTTP 受信元を ALB に限定する構成を確認するため
+- 将来的な HTTPS 化やパスベースルーティングなどの拡張につなげやすいため
 
-ALB の Listener は HTTP:80 とし、デフォルトアクションで `manual-poc-tg` に転送しています。
+Listener は HTTP 80 とし、デフォルトアクションで Target Group へ転送しました。
 
----
+## 8. 監視を今回のスコープ外とした理由
 
-## 8. 監視は Terraform フェーズでまとめて実施する理由
-CloudWatch Alarm などの監視設定は、手作業フェーズでは後回しにし、Terraform フェーズでまとめて実装する方針としています。
+CloudWatch Alarm などの監視は、本 PoC では実装対象外としました。
 
-理由は以下の通りです。
+- まずネットワーク、アクセス制御、EC2、ALB、Terraform の基本に学習範囲を絞るため
+- 短時間で作成・削除する検証環境であり、常時監視の必要性が低かったため
+- 監視対象、閾値、通知経路まで設計する場合は、別の学習テーマとして扱う方が整理しやすいため
 
-- まずは本体リソースの構築と疎通確認を優先したいため
-- 監視は ALB / EC2 / Target Group などの各リソースと密接に関連するため、コード管理した方が整理しやすいため
-- Terraform 化後にまとめて定義することで、再現性のある監視設定として残せるため
+実運用を想定する場合は、ALB の 5xx、Target Response Time、Healthy Host Count、EC2 の CPU 使用率などを候補として、要件に応じた監視を追加します。
 
----
+## 9. Terraform のファイルを責務ごとに分割した理由
 
-## 9. この PoC で重視したこと
-本 PoC では、以下を特に重視しています。
+本 PoC は小規模であるため module 化は行わず、ルートモジュール内で責務ごとに `.tf` ファイルを分割しました。
 
-- 最小構成で本質を理解すること
-- 不要な公開を避けること
-- 手動理解から IaC 化へつなげること
-- 後で説明できる構成にすること
-- 単なる動作確認ではなく、設計意図まで残すこと
+- ネットワーク、Security Group、IAM、EC2、ALB の関係を追いやすくするため
+- 小規模な学習コードで過度に抽象化しないため
+- 将来 module 化する場合の責務の境界を意識するため
 
----
+## 10. Terraform State をローカル管理とした理由
 
-## 10. 今後の改善候補
-今後は以下のような改善を検討しています。
+個人で短時間実施する単一環境の PoC であるため、Terraform State はローカル管理としました。State ファイルは Git の管理対象外としています。
 
-- Terraform による再現
-- CloudWatch Alarm の追加
-- README や構成図の拡充
-- destroy / 再 apply による再現性確認
-- Private Subnet 構成への拡張
-- NAT Gateway / VPC Endpoint の導入検討
-- HTTPS / ACM 証明書の導入
-- 監視項目やアラート条件の整理
+チーム利用や継続運用を想定する場合は、S3 バックエンド、State Lock、暗号化、アクセス制御などを設計します。
+
+## 11. 検証後にリソースを削除した理由
+
+検証終了後、Terraform 版では `terraform destroy` を実行し、20 リソースが削除されることを確認しました。手作業版を含む検証用リソースも削除済みです。
+
+- 不要な継続課金を防ぐため
+- IaC のライフサイクルとして、構築だけでなく削除まで確認するため
+- 一時的な検証環境を残さないため
+
+## 12. 今後の改善候補
+
+- EC2 の Private Subnet への移行
+- ACM を利用した HTTPS 化
+- CloudWatch Metrics / Alarm と通知経路の追加
+- Terraform State のリモート管理
+- CI による `terraform fmt -check` / `terraform validate` の自動化
+- IAM、暗号化、ログ、送信方向の通信制御を含むセキュリティ強化
+- 構成の再利用が必要になった場合の module 化

@@ -1,12 +1,24 @@
-# Terraform版 検証結果
+# Terraform 版 検証結果
 
 ## 1. 検証目的
-手作業で構築した最小 Web 基盤を Terraform により別 VPC 上へ再現できることを確認する。  
-あわせて、ALB 配下で 2 台の EC2 へロードバランシングされること、および user data による初期設定自動化を確認する。
+
+手作業で構築した最小 Web 基盤を、Terraform により別 VPC 上へ再現できることを確認しました。
+
+あわせて、以下を検証しました。
+
+- Terraform の構文および構成が正常であること
+- 必要な AWS リソースを一括構築できること
+- ALB 配下の EC2 2 台へリクエストが分散されること
+- user data による初期設定自動化が機能すること
+- Terraform State で管理対象を確認できること
+- `terraform destroy` により作成したリソースを削除できること
 
 ## 2. 実施環境
+
 - Region: `ap-northeast-1`
-- Terraform 実行ディレクトリ: `C:\Tools\git\AWSPoC\terraform`
+- Terraform 実行ディレクトリ: `terraform/`
+- EC2 OS: Amazon Linux 2023
+- Web server: nginx
 
 ## 3. 実行コマンド
 
@@ -18,36 +30,44 @@ terraform plan
 terraform apply
 terraform output
 terraform state list
+terraform destroy
 ```
 
 ## 4. 確認観点
-1. Terraform により必要な AWS リソースが正常に作成されること
-2. ALB の DNS 名でアクセス可能であること
-3. アクセスを繰り返すと `tf-poc-web1` と `tf-poc-web2` が切り替わること
-4. EC2 2 台が ALB 配下で動作していること
-5. EC2 管理アクセスの前提が SSH ではなく SSM であること
-6. Terraform により構築済みリソースが state 管理されていること
+
+1. Terraform の初期化、フォーマット、検証、Plan が正常に完了すること
+2. Terraform により必要な AWS リソースが作成されること
+3. Target Group 配下の EC2 2 台が正常になること
+4. ALB の DNS 名から Web サーバーへアクセスできること
+5. アクセスを繰り返すと `tf-poc-web1` と `tf-poc-web2` の両方が表示されること
+6. EC2 の HTTP 受信元が ALB 用 Security Group に限定されていること
+7. EC2 の管理アクセスに SSH ではなく Session Manager を利用できる構成であること
+8. 主要リソースが Terraform State で管理されること
+9. 検証後に作成リソースを削除できること
 
 ## 5. 実施結果
 
-### 5.1 init / validate / plan / apply
-- `terraform init` 成功
-- `terraform validate` 成功
-- `terraform plan` 成功
-- `terraform apply` 成功
+### 5.1 `terraform validate`
 
-### 5.2 ALB 経由の疎通確認
-`terraform output` で取得した ALB DNS 名へブラウザからアクセスし、想定どおり Web 画面が表示されることを確認した。  
-また、ブラウザ更新を複数回実施したところ、`tf-poc-web1` と `tf-poc-web2` が切り替わって表示されることを確認した。
+`terraform validate` が成功し、構成ファイルが有効であることを確認しました。
 
-これにより、以下を確認できた。
+![terraform validate result](images/validate.png)
 
-- ALB が正常にリクエストを受け付けている
-- Target Group 配下の EC2 2 台へリクエストが振り分けられている
-- user data によって各 EC2 の `index.html` が自動設定されている
+### 5.2 `terraform plan`
 
-### 5.3 terraform output 確認
-`terraform output` により、以下の値を取得できることを確認した。
+`terraform plan` を実行し、作成対象と変更内容を事前確認しました。
+
+![terraform plan result](images/plan.png)
+
+### 5.3 `terraform apply`
+
+`terraform apply` が成功し、20 リソースが作成されることを確認しました。
+
+![terraform apply result](images/apply.png)
+
+### 5.4 `terraform output`
+
+`terraform output` により、構築後の確認に必要な以下の値を取得できることを確認しました。
 
 - `alb_dns_name`
 - `public_subnet_a_id`
@@ -57,53 +77,83 @@ terraform state list
 - `web1_instance_id`
 - `web2_instance_id`
 
-これにより、構築後の確認や追加検証に必要な情報を Terraform から取得できることを確認した。
+![terraform output result](images/output.png)
 
-### 5.4 terraform state list 確認
-`terraform state list` により、以下の主要リソースが Terraform state 上で管理されていることを確認した。
+### 5.5 Target Group の正常性
+
+Target Group に登録した EC2 2 台がともに `healthy` になることを確認しました。
+
+![Target Group healthy result](images/target_group_healthy.png)
+
+### 5.6 ALB 経由の疎通および負荷分散
+
+`terraform output` で取得した ALB の DNS 名へブラウザからアクセスし、Web ページが表示されることを確認しました。
+
+ブラウザ更新を複数回実施し、`tf-poc-web1` と `tf-poc-web2` の両方が表示されることを確認しました。
+
+| `tf-poc-web1` | `tf-poc-web2` |
+|---|---|
+| ![ALB access result web1](images/alb1.png) | ![ALB access result web2](images/alb2.png) |
+
+これにより、以下を確認しました。
+
+- ALB が HTTP リクエストを受け付けること
+- Target Group 配下の EC2 2 台がバックエンドとして機能すること
+- user data により各 EC2 の nginx と `index.html` が自動設定されること
+
+### 5.7 Terraform State の確認
+
+`terraform state list` を実行し、以下の主要リソースが Terraform State 上で管理されていることを確認しました。
 
 - VPC
-- Public Subnet 2つ
+- Public Subnet × 2
 - Internet Gateway
-- Route Table
-- Route Table Association
-- Security Group 2つ
-- IAM Role / Instance Profile
-- EC2 2台
+- Route Table / Route / Route Table Association
+- Security Group × 2
+- IAM Role / Instance Profile / Policy Attachment
+- EC2 × 2
 - ALB
-- Target Group
+- Target Group / Target Group Attachment
 - Listener
-- Target Group Attachment
 
-これにより、今回構築した主要リソースが Terraform 管理下にあることを確認した。
+![terraform state list result](images/state_list.png)
+
+### 5.8 `terraform destroy`
+
+検証完了後に `terraform destroy` を実行し、Terraform で作成した 20 リソースが削除されることを確認しました。
+
+![terraform destroy result](images/destroy.png)
 
 ## 6. 所要時間
-- `terraform apply` 所要時間: 約 3 分
 
-手作業構築と比較して、IaC による再現性と構築速度の有効性を確認できた。
+- `terraform apply`: 約 3 分
+
+手作業構築と比較し、コードから同一構成を一括作成できること、および構成を再現しやすいことを確認しました。
 
 ## 7. 検証結果まとめ
-今回の Terraform 版では、手作業で理解した最小 Web 基盤を別 VPC 上に再現し、以下を確認できた。
 
-- Terraform により最小 Web 基盤を構築できる
-- ALB 経由で 2 台の EC2 へアクセスが分散される
-- user data による初期設定自動化が機能する
-- Systems Manager を前提とした EC2 管理構成を実装できる
-- 構築したリソースを Terraform state で一元管理できる
+- Terraform で最小 Web 基盤を構築できること
+- 2 つの Availability Zone に EC2 を配置できること
+- ALB から Target Group 配下の EC2 2 台へアクセスできること
+- Target Group のヘルスチェックで EC2 2 台が正常になること
+- user data による EC2 初期設定自動化が機能すること
+- Session Manager を前提とした管理構成を定義できること
+- 主要リソースを Terraform State で一元管理できること
+- `terraform destroy` により構築リソースを削除できること
 
-## 8. 取得した証跡
-以下の証跡を取得対象とする。
+## 8. 公開時の情報管理
 
-- `terraform plan` 実行結果
-- `terraform apply` 実行結果
-- `terraform output` 実行結果
-- `terraform state list` 実行結果
-- ALB DNS アクセス結果（`tf-poc-web1` 表示）
-- ALB DNS アクセス結果（`tf-poc-web2` 表示）
-- Target Group healthy 画面
-- 必要に応じて Systems Manager 接続画面
+- 画像内の AWS アカウント ID はマスクしています
+- リソース ID、ARN、ALB の DNS 名は検証時のものであり、対象リソースは削除済みです
+- AWS のアクセスキー、シークレットアクセスキー、セッショントークン、秘密鍵はリポジトリに含めていません
 
-## 9. 補足
-- ID / ARN / DNS 名は構築のたびに変化するため、ドキュメント上は必要に応じてマスクまたは例示とする
-- 今回は理解優先のため、ALB / EC2 ともに Public Subnet に配置した
-- より実運用に近づける場合は、Private Subnet / NAT Gateway / CloudWatch 追加を行う
+## 9. 今回のスコープと改善候補
+
+本 PoC は構成要素の理解を優先した最小構成です。
+
+- ALB / EC2 ともに Public Subnet に配置
+- HTTP のみで、HTTPS は未実装
+- CloudWatch Alarm は未実装
+- Terraform State はローカル管理
+
+実運用を想定する場合は、Private Subnet、NAT Gateway または VPC Endpoint、HTTPS / ACM、監視、ログ、State のリモート管理、CI などを追加します。
